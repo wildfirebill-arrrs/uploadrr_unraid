@@ -146,7 +146,7 @@ class R4E:
 
                     else:
                         try:
-                            from selectolax.parser import HTMLParser
+                            from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
                             tree = HTMLParser(response.text)
                             error_heading = tree.css_first(".error__heading")

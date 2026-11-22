@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 import aiofiles
 import niquests
 from rich.pretty import Pretty
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
 from src.mediainfo import MediaInfoHandler
 from src.trackers.GAZELLE import Gazelle

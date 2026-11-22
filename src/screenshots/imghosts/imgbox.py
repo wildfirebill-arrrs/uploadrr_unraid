@@ -5,7 +5,7 @@ import mimetypes
 from pathlib import Path
 
 import niquests
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
 from src.utils.console import log
 

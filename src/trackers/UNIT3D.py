@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 import niquests
 from rich.pretty import Pretty
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
 from src.utils.console import console, log
 from src.utils.descgen import DescGenerator

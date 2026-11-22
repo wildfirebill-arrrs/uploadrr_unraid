@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import aiofiles
 import niquests
 from rich.prompt import Confirm
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 from unidecode import unidecode
 
 from src.exceptions import UploadException

@@ -252,7 +252,7 @@ class THR:
         return pronfo
 
     def search_existing(self, session, imdb_id):
-        from selectolax.parser import HTMLParser
+        from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
         imdb_id = imdb_id.replace("tt", "")
         search_url = f"https://www.torrenthr.org/browse.php?search={imdb_id}&blah=2&incldead=1"
