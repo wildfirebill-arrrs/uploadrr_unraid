@@ -1,7 +1,7 @@
 services:
   uploadrr:
     build: .
-    image: ghcr.io/wildfirebill-unraid/uploadrr:latest
+    image: ghcr.io/wildfirebill-arrrs/uploadrr:latest
     container_name: uploadrr
     restart: unless-stopped
     # Keep the container alive so you can exec into it for CLI usage.
