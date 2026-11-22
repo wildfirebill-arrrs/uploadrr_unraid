@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: wildfirebill-arrrs/uploadrr
+  IMAGE_NAME: wildfirebill-arrrs/uploadrr_unraid
 
 jobs:
   build-and-push:
