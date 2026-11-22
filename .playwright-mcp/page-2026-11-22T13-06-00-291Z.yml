@@ -1,0 +1,9 @@
+- main [ref=f17e2]:
+  - article [ref=f17e3]:
+    - generic [ref=f17e4]:
+      - 'heading "Error 404: Page not found" [level=1] [ref=f17e5]'
+      - generic [ref=f17e6]: The route users/wildfirebill/security could not be found.
+      - link " Go home" [ref=f17e7] [cursor=pointer]:
+        - /url: https://0dayfiles.net
+        - generic [ref=f17e8]: 
+        - text: Go home
