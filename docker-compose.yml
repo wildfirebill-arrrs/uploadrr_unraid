@@ -17,19 +17,19 @@ services:
     command: -f /dev/null
     volumes:
       # Configuration (config.yaml lives here)
-      - /mnt/user/appdata/uploadrr/data:/app/data:rw
+      - /mnt/cache/appdata/arrrs/uploadrr/data:/app/data:rw
       # Temporary/working files
-      - /mnt/user/appdata/uploadrr/tmp:/app/tmp:rw
+      - /mnt/cache/appdata/arrrs/uploadrr/tmp:/app/tmp:rw
       # Screenshot temp pics
       - /mnt/user/data/arrs/temp_pics:/app/temp_pics:rw
       # Media to upload (map to your download client's container path)
       - /mnt/user/data/torrents:/data:rw
       # qBittorrent (or other client) BT_backup for torrent storage reuse
-      - /mnt/user/appdata/qbittorrent/data/BT_backup:/torrent_storage_dir:rw
+      - /mnt/cache/appdata/arrrs/qbittorrent/data/BT_backup:/torrent_storage_dir:rw
       # Seedbox mount point (mount via rclone on host, or exec into container)
       - /mnt/user/seedbox:/seedbox:rw
       # rclone config (optional, for in-container mounts)
-      - /mnt/user/appdata/uploadrr/rclone:/root/.config/rclone:rw
+      - /mnt/cache/appdata/arrrs/uploadrr/rclone:/root/.config/rclone:rw
     environment:
       - PUID=99
       - PGID=100

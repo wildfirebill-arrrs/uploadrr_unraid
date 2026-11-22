@@ -13,7 +13,7 @@ set -euo pipefail
 CONTAINER="uploadrr_unraid"
 REMOTE_PATH="${1:-/downloads/qbittorrent}"
 MOUNT_POINT="/mnt/user/seedbox"
-RCLONE_CONF="/boot/config/rclone/rclone.conf"
+RCLONE_CONF="/mnt/cache/appdata/arrrs/uploadrr/rclone/rclone.conf"
 
 # Ensure mount point exists
 mkdir -p "$MOUNT_POINT"
