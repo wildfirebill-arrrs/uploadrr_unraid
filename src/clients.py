@@ -663,7 +663,24 @@ class Clients:
         client: dict,
         tracker: str,
     ) -> None:
-        await asyncio.to_thread(shutil.copy, torrent_path, Path(client["watch_folder"]))
+        base_folder = Path(client["watch_folder"])
+        # Route the .torrent into a category subfolder when a {category} token
+        # or a category_map is configured. This keeps qui/qBittorrent category
+        # routing working without manual selection.
+        category = (meta.get("category") or "").upper()
+        category_map = client.get("category_map") or {}
+        mapped = category_map.get(category)
+        if mapped is None:
+            # Default: lowercase the uploadrr category (MOVIE -> movie, TV -> tv, ...)
+            mapped = category.lower() if category else ""
+        if mapped:
+            target_dir = base_folder / mapped
+            await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
+            dest = target_dir / torrent_path.name
+        else:
+            dest = base_folder / torrent_path.name
+        await asyncio.to_thread(shutil.copy, torrent_path, dest)
+        log.info(f"[cyan]Torrent copied to watch folder: {dest}[/cyan]")
 
     def add_fast_resume(self, metainfo: dict, datapath: str, torrent: Torrent) -> dict:
         files = metainfo["info"].get("files")
