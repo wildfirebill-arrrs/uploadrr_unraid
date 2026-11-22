@@ -20,6 +20,8 @@ services:
       - /mnt/user/appdata/uploadrr/data:/app/data:rw
       # Temporary/working files
       - /mnt/user/appdata/uploadrr/tmp:/app/tmp:rw
+      # Screenshot temp pics
+      - /mnt/user/data/arrs/temp_pics:/app/temp_pics:rw
       # Media to upload (map to your download client's container path)
       - /mnt/user/data/torrents:/data:rw
       # qBittorrent (or other client) BT_backup for torrent storage reuse

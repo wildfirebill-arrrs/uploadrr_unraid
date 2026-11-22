@@ -1,0 +1,23 @@
+# rclone config for Uploadrr seedbox access
+# Copy to your rclone config location (e.g. /root/.config/rclone/rclone.conf)
+# and replace <OBSCURED_PASSWORD> with the output of:  rclone obscure "YOUR_PASSWORD"
+#
+# Generate obscured password inside the container:
+#   docker exec -it uploadrr_unraid rclone obscure "evGxBqVQrSHupNDtPW5LzSTG"
+#
+# Then paste the result below.
+
+[seedbox]
+type = sftp
+host = indigo.usbx.me
+port = 22
+user = wildfirebill
+pass = <OBSCURED_PASSWORD>
+shell_type = unix
+md5sum_command = md5sum
+sha1sum_command = sha1sum
+
+# Optional: second seedbox or alternate remote
+# [seedbox2]
+# type = sftp
+# host = ...
