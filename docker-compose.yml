@@ -4,6 +4,12 @@ services:
     image: ghcr.io/wildfirebill-arrrs/uploadrr_unraid:latest
     container_name: uploadrr_unraid
     restart: unless-stopped
+    # Required for rclone mount (FUSE) inside the container; remove if not mounting in-container
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
     # Keep the container alive so you can exec into it for CLI usage.
     # Override entrypoint/command to run a one-shot upload instead, e.g.:
     #   docker compose run --rm uploadrr /data/movie.mkv --trackers BLU HDB
@@ -18,6 +24,10 @@ services:
       - /mnt/user/data/torrents:/data:rw
       # qBittorrent (or other client) BT_backup for torrent storage reuse
       - /mnt/user/appdata/qbittorrent/data/BT_backup:/torrent_storage_dir:rw
+      # Seedbox mount point (mount via rclone on host, or exec into container)
+      - /mnt/user/seedbox:/seedbox:rw
+      # rclone config (optional, for in-container mounts)
+      - /mnt/user/appdata/uploadrr/rclone:/root/.config/rclone:rw
     environment:
       - PUID=99
       - PGID=100
