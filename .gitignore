@@ -9,6 +9,7 @@ __pycache__/
 .wdm/
 *venv/
 logo-ascii.txt
+wildfirebill-ascii.txt
 *.egg-info
 
 # Project Specifics
