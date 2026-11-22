@@ -19,7 +19,6 @@ data/*_index.json
 data/backup/old_config*
 data/cookies/*
 data/config.*
-data/tags.json
 tmp/*
 TEST.py
 *.wip
