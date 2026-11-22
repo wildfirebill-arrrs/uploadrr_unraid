@@ -8,6 +8,7 @@ __pycache__/
 .idea/
 .wdm/
 *venv/
+logo-ascii.txt
 *.egg-info
 
 # Project Specifics
