@@ -1,9 +1,0 @@
-- main [ref=f13e2]:
-  - article [ref=f13e3]:
-    - generic [ref=f13e4]:
-      - 'heading "Error 404: Page not found" [level=1] [ref=f13e5]'
-      - generic [ref=f13e6]: The route users/wildfirebill/settings could not be found.
-      - link " Go home" [ref=f13e7] [cursor=pointer]:
-        - /url: https://0dayfiles.net
-        - generic [ref=f13e8]: 
-        - text: Go home

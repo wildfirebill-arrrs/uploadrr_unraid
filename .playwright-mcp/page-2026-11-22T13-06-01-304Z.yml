@@ -1,9 +1,0 @@
-- main [ref=f18e2]:
-  - article [ref=f18e3]:
-    - generic [ref=f18e4]:
-      - 'heading "Error 404: Page not found" [level=1] [ref=f18e5]'
-      - generic [ref=f18e6]: The route users/wildfirebill/api could not be found.
-      - link " Go home" [ref=f18e7] [cursor=pointer]:
-        - /url: https://0dayfiles.net
-        - generic [ref=f18e8]: 
-        - text: Go home

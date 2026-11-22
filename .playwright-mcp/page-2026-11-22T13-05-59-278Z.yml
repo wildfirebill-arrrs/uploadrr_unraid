@@ -1,9 +1,0 @@
-- main [ref=f16e2]:
-  - article [ref=f16e3]:
-    - generic [ref=f16e4]:
-      - 'heading "Error 404: Page not found" [level=1] [ref=f16e5]'
-      - generic [ref=f16e6]: The route user/settings could not be found.
-      - link " Go home" [ref=f16e7] [cursor=pointer]:
-        - /url: https://0dayfiles.net
-        - generic [ref=f16e8]: 
-        - text: Go home

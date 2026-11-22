@@ -25,3 +25,4 @@ bin/
 
 *.md
 !README.md
+.playwright-mcp/
