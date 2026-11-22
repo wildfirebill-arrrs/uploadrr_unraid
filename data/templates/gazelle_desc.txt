@@ -1,0 +1,22 @@
+[info]
+{{ tmdb_url }}
+{{ imdb_url }}{% if tvdb_url %}
+{{ tvdb_url }}{% endif %}{% if mal_url %}
+{{ mal_url }}{% endif %}
+[/info]
+
+[plot]
+{{ overview }}
+[/plot]
+
+[screens]{% if main_images %}
+{{ main_images }}{% endif %}{% if category == 'TV' and episodes %}
+{{ episodes }}{% endif %}
+[/screens]
+
+[details]
+[mediainfo]
+{{ mediainfo }}
+[/mediainfo]
+[/details]
+{{signature}}

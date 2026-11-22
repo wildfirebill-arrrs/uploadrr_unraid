@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from typing import Any, ClassVar
+
+import niquests
+from pymediainfo import MediaInfo
+
+from src.mediainfo import MediaInfoHandler
+from src.trackers.UNIT3D import Unit3d
+from src.utils.console import console, log
+
+
+class LDU(Unit3d):
+    tracker = "LDU"
+    source_flag = "LDU"
+    domain = "https://theldu.to"
+    banned_groups: ClassVar[dict[str, Any]] = [""]
+    allowed_imghosts: ClassVar[list[str]] = []
+
+    async def get_cat_id(self, meta):
+        category_name = meta["category"]
+
+        adult = meta.get("adult", False)
+        anime = meta.get("anime", False)
+        edition = meta.get("edition", "")
+        genres = {g.strip().lower() for g in (meta.get("genres") or "").split(",") if g.strip()}
+        hc = meta.get("hardcoded_subs", False)
+        is_silent = meta.get("is_silent", False)
+        keywords = {k.strip().lower() for k in (meta.get("keywords") or "").split(",") if k.strip()}
+        original_language = meta.get("original_language")
+        xxx = meta.get("xxx")
+
+        tag = self.get_language_tag(meta) or ""
+        tags = [t[1:] for t in tag.split("]") if t]
+
+        # DVD language tags not guarteed due to mediainfo bug (NOTE dvd_patch should fix?)
+        lang_unknown = meta.get("is_disc") != "DVD" and "???" in tags and original_language != "en"
+
+        # Keywords in Sets
+        holidays = {"holiday", "christmas", "xmas", "hanukkah", "easter"}
+
+        if category_name == "SPORTS":
+            return "35"
+        if category_name == "MUSIC":
+            return "3"
+
+        if adult and (anime or "hentai" in keywords or "animation" in keywords):
+            return "10"  # Adult anime/hentai
+        if adult and not xxx:
+            return "6"  # Adult TMDb Listed
+
+        if category_name == "MOVIE":
+            if lang_unknown or hc:
+                return "27"
+            if "ENG" not in "".join(tags):
+                return "22"
+            if "3D" in edition:
+                return "21"
+            if any(x in edition.upper() for x in ["FANRES", "FANEDIT", "FANFIX", "RESTORATION"]):
+                return "12"
+            if anime or "anime" in keywords:
+                return "8"
+            if "silent film" in keywords or is_silent:
+                return "18"
+            if holidays & keywords:
+                return "24"
+            if "musical" in keywords:
+                return "25"
+            if "documentary" in genres:
+                return "17"
+            if "stand-up" in keywords or "stand up" in keywords:
+                return "20"
+            if "short film" in keywords:
+                return "19"
+            return "1"  # Default for MOVIE
+
+        elif category_name == "TV":
+            if lang_unknown or hc:
+                return "31"
+            if "ENG" not in "".join(tags):
+                return "29"
+            if anime or "anime" in keywords:
+                return "9"
+            return "2"  # Default for TV
+
+        elif category_name == "XXX":
+            if ("pack") in meta["uuid"]:
+                return "15"
+            if not meta.get("tmdb"):
+                return "30"
+            if meta.get("tmdb") and "ENG" not in "".join(tags):
+                return "45"
+            return "6"
+
+        # === Safeguard ===
+        # fmt: off
+        category_id = {
+            "MOVIE": "1",
+            "TV": "2",
+            "Anime": "8",
+            "FANRES": "12",
+            "SPORTS": "35",
+            "MUSIC": "3",
+            "XXX": "6"
+        }.get(category_name, "0")
+        # fmt: on
+        return category_id
+
+    async def get_type_id(self, meta: dict[str, Any]) -> str:
+        type = meta["type"]
+        edition = meta.get("edition", "")
+        type_id = {
+            "DISC": "1",
+            "REMUX": "2",
+            "WEBDL": "4",
+            "WEBRIP": "5",
+            "HDTV": "6",
+            "ENCODE": "3",
+            "UPSCALE": "27",
+            "AAC": "10",
+            "FLAC": "7",
+            "MP3": "11",
+            "ALAC": "8",
+            "AC3": "9",
+            "WAVE": "14",
+            "OGG": "14",
+        }.get(type, "14")  # 14 is other
+        if type == "ENCODE":
+            if "upscale" in edition.lower() or " ai" in edition.lower():
+                type_id = "27"
+        return type_id
+
+    def get_language_tag(self, meta):
+        soundmix = meta.get("imdb_info", {}).get("soundmix", [])
+        is_silent = "silent" in soundmix if soundmix else False
+
+        mihandle = MediaInfoHandler()
+        mi = mihandle._cache.get(meta["uuid"])
+
+        def validate_language_code(lang):
+            if not lang or len(lang) != 3:
+                return None
+            if lang == "---":
+                return None
+            return lang.upper()
+
+        audio_lang = []
+        sub_lang = []
+
+        if mi:  # TODO test reliability for BDMV (whatbout TV!?)
+            for x in mi["media"]["track"]:
+                if x["@type"] == "Audio":
+                    commentary_found = "Title" in x and (
+                        "comment" in x["Title"].lower() or "review" in x["Title"].lower()
+                    )
+                    if not commentary_found:
+                        lang = x.get("Language_String3")
+                        if lang and lang.upper() != "???":
+                            audio_lang.append(lang.upper())
+
+            # Subs
+            for x in mi["media"]["track"]:
+                if x["@type"] == "Text":
+                    lang = x.get("Language_String3")
+                    if lang and lang.upper() != "???":
+                        sub_lang.append(lang.upper())
+
+        # if vob has no subs try ifo
+        if not sub_lang and meta.get("is_disc") == "DVD" and meta.get("discs"):
+            try:
+                ifo_path = str(meta["discs"][0]["ifo"])
+                ifo_mi = json.loads(MediaInfo.parse(ifo_path, output="JSON"))
+                for track in ifo_mi["media"]["track"]:
+                    if track["@type"] == "Text":
+                        lang = track.get("Language_String3")
+                        if lang and lang.upper() != "???":
+                            sub_lang.append(lang.upper())
+            except Exception:
+                pass
+
+        audio_lang = list(dict.fromkeys(audio_lang))
+        sub_lang = list(dict.fromkeys(sub_lang))
+
+        # Default if empty
+        if not audio_lang:
+            audio_lang = ["???"]
+        if not sub_lang:
+            sub_lang_tag = "[No Subs]"
+        else:
+            if "ENG" in sub_lang:
+                sub_lang_tag = "[Subs ENG+]" if len(sub_lang) > 1 else "[Subs ENG]"
+            else:
+                first_lang = sub_lang[0]
+                sub_lang_tag = f"[Subs {first_lang}+]" if len(sub_lang) > 1 else f"[Subs {first_lang}]"
+
+        # Compute lang_tag
+        lang_tag = "[Silent]" if is_silent else f"[{' '.join(audio_lang)}]"
+
+        return lang_tag + " " + sub_lang_tag
+
+    async def edit_name(self, meta) -> str:
+        if meta["category"] in ("MUSIC", "SPORTS", "XXX"):
+            return meta["name"]
+        ldu_name = meta["name_notag"]
+        tag = meta.get("tag", "-NOGRP")
+        year = str(meta.get("year", ""))
+        no_tag = meta.get("no_tag", False)
+
+        bracket_fields = ["cut", "ratio", "edition", "repack", "resolution", "source", "dvd_size"]
+
+        found = None
+        for field in bracket_fields:
+            value = (meta.get(field) or "").strip()
+            if value and value in ldu_name:
+                found = value
+                break
+        if found and found in ldu_name:
+            parts = ldu_name.split(found, 1)
+            # Inject the opening bracket before the first matched field
+            ldu_name = f"{parts[0].strip()} [{found} {parts[1].strip()}"
+            if not no_tag:
+                ldu_name += f"{tag}]"
+            else:
+                ldu_name += "]"
+        else:
+            if not no_tag:
+                ldu_name = f"{ldu_name}{tag}"
+
+        ldu_name = ldu_name.replace(year, f"({year})")
+
+        lang_tag = self.get_language_tag(meta)
+        if lang_tag:
+            ldu_name += f" {lang_tag}"
+
+        ldu_name = " ".join(ldu_name.split())
+        meta[f"{self.tracker}_name"] = ldu_name
+        return ldu_name
+
+    async def search_existing(self, meta: dict[str, Any]) -> dict[str, Any]:
+        dupes: dict[str, Any] = {}
+        console.print(f"[yellow]Searching for existing torrents on {self.tracker}...")
+
+        name = meta.get("edition", "") if meta["category"] != "XXX" else meta["title"]
+
+        params = {
+            "api_token": self.config["TRACKERS"][self.tracker]["api_key"].strip(),
+            "tmdbId": meta.get("tmdb", 0),
+            "categories[]": await self.get_cat_id(meta),
+            "types[]": await self.get_type_id(meta),
+            "resolutions[]": await self.get_res_id(meta),
+            "name": name,
+        }
+
+        async with niquests.AsyncSession(timeout=self.timeout, disable_http3=True) as client:
+            try:
+                response = await client.get(self.search_url, params=params)
+                if response.status_code == 200:
+                    response_json = response.json()
+                    for item in response_json.get("data", []):
+                        name = item["attributes"]["name"]
+                        size = item["attributes"]["size"]
+                        match = re.split(r"(-\w*\])", name)
+                        if len(match) > 1:
+                            name = match[0] + match[1]
+                        if "🔥Eternal" not in name:
+                            dupes[name] = size
+                else:
+                    log.error(f"[red]Failed to search: HTTP {response.status_code}[/red]")
+            except Exception as e:
+                console.print(f"[red]Unable to search for existing torrents: {e}[/red]")
+                await asyncio.sleep(5)
+        return dupes

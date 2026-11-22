@@ -1,0 +1,358 @@
+import glob
+import json
+import os
+import pickle
+import re
+from pathlib import Path
+from urllib.parse import urlparse
+
+import niquests
+from selectolax.parser import HTMLParser
+from unidecode import unidecode
+
+from src.exceptions import LoginException, UploadException
+from src.mediainfo import MediaInfoHandler
+from src.trackers.COMMON import COMMON
+from src.utils.console import console
+from src.utils.torrentman import edit_torrent
+
+"""
+CvT NOTE: Likely borked. This should be updated to newer nexus structure. Not on PTER. Unable to test.
+"""
+
+
+class PTER:
+    def __init__(self, config):
+        self.config = config
+        self.type = "http"  # TODO nexus
+        self.tracker = "PTER"
+        self.source_flag = "PTER"
+        self.signature = None
+        self.domain = "https://pterclub.com"
+        self.passkey = str(config["TRACKERS"]["PTER"].get("passkey", "")).strip()
+        self.announce_url = f"{self.domain}/announce.php?passkey={self.passkey}"
+        self.username = config["TRACKERS"]["PTER"].get("username", "").strip()
+        self.password = config["TRACKERS"]["PTER"].get("password", "").strip()
+        self.rehost_images = config["TRACKERS"]["PTER"].get("img_rehost", False)
+        self.ptgen_api = config["TRACKERS"]["PTER"].get("ptgen_api").strip()
+
+        self.ptgen_retry = 3
+        self.banned_groups = [""]
+
+    async def validate_credentials(self, meta):
+        vcookie = await self.validate_cookies(meta)
+        if not vcookie:
+            console.print(
+                "[red]Failed to validate cookies. Please confirm that the site is up and your passkey is valid."
+            )
+            return False
+        return True
+
+    async def validate_cookies(self, meta):
+        common = COMMON(config=self.config)
+        cookiefile = f"{meta['base_dir']}/data/cookies/PTER.txt"
+        if os.path.exists(cookiefile):
+            with niquests.Session() as session:
+                session.cookies.update(await common.parseCookieFile(cookiefile))
+                resp = session.get(url=self.domain)
+
+                if meta["debug"]:
+                    console.print("[cyan]Cookies:")
+                    console.print(session.cookies.get_dict())
+                    console.print("\n\n")
+                    console.print(resp.text)
+                return resp.text.find("""<a href="#" data-url="logout.php" id="logout-confirm">""") != -1
+        else:
+            console.print("[bold red]Missing Cookie File. (data/cookies/PTER.txt)")
+            return False
+
+    async def search_existing(self, meta):
+        dupes = {}
+        common = COMMON(config=self.config)
+        cookiefile = f"{meta['base_dir']}/data/cookies/PTER.txt"
+        if os.path.exists(cookiefile):
+            with niquests.Session() as session:
+                session.cookies.update(await common.parseCookieFile(cookiefile))
+                imdb = f"tt{meta['imdb_id']}" if int(meta["imdb_id"].replace("tt", "")) != 0 else ""
+                source = await self.get_type_medium_id(meta)
+                search_url = f"https://pterclub.com/torrents.php?search={imdb}&incldead=0&search_mode=0&source{source}=1"
+                r = session.get(search_url)
+                tree = HTMLParser(r.text)
+                rows = tree.css("table.torrents > tr")
+                for row in rows:
+                    if not row.css_first("table.torrentname"):
+                        continue
+                    text = row.css_first('a[href^="details.php?id="]')
+                    if text is not None:
+                        release = text.attributes.get("title", "")
+                        try:
+                            size = text.attributes["size"]
+                        except Exception:
+                            size = 0
+                    if release:
+                        result = release
+                        dupes[result] = size
+        else:
+            console.print("[bold red]Missing Cookie File. (data/cookies/PTER.txt)")
+            return False
+        return dupes
+
+    async def get_type_category_id(self, meta):
+        cat_id = "EXIT"
+
+        if meta["category"] == "MOVIE":
+            cat_id = 401
+
+        if meta["category"] == "TV":
+            cat_id = 404
+
+        if (
+            "documentary" in (meta.get("genres") or "").lower()
+            or "documentary" in (meta.get("keywords") or "").lower()
+        ):
+            cat_id = 402
+
+        if (
+            "Animation" in (meta.get("genres") or "").lower()
+            or "Animation" in (meta.get("keywords") or "").lower()
+        ):
+            cat_id = 403
+
+        return cat_id
+
+    async def get_area_id(self, meta):
+        area_id = 8
+        area_map = {  # To do
+            "中国大陆": 1,
+            "中国香港": 2,
+            "中国台湾": 3,
+            "美国": 4,
+            "日本": 6,
+            "韩国": 5,
+            "印度": 7,
+            "法国": 4,
+            "意大利": 4,
+            "德国": 4,
+            "西班牙": 4,
+            "葡萄牙": 4,
+            "英国": 4,
+            "阿根廷": 8,
+            "澳大利亚": 4,
+            "比利时": 4,
+            "巴西": 8,
+            "加拿大": 4,
+            "瑞士": 4,
+            "智利": 8,
+        }
+        regions = meta["ptgen"].get("region", [])
+        for area in area_map:
+            if area in regions:
+                return area_map[area]
+        return area_id
+
+    async def get_type_medium_id(self, meta):
+        medium_id = "EXIT"
+        # 1 = UHD Discs
+        if meta.get("is_disc", "") in ("BDMV", "HD DVD"):
+            medium_id = 1 if meta["resolution"] == "2160p" else 2
+
+        if meta.get("is_disc", "") == "DVD":
+            medium_id = 7
+
+        # 4 = HDTV
+        if meta.get("type", "") == "HDTV":
+            medium_id = 4
+
+        # 6 = Encode
+        if meta.get("type", "") in ("ENCODE", "WEBRIP"):
+            medium_id = 6
+
+        # 3 = Remux
+        if meta.get("type", "") == "REMUX":
+            medium_id = 3
+
+        # 5 = WEB-DL
+        if meta.get("type", "") == "WEBDL":
+            medium_id = 5
+
+        return medium_id
+
+    async def get_auth_token(self, meta):
+        if not os.path.exists(f"{meta['base_dir']}/data/cookies"):
+            Path(f"{meta['base_dir']}/data/cookies").mkdir(parents=True, exist_ok=True)
+        cookiefile = f"{meta['base_dir']}/data/cookies/Pterimg.pickle"
+        with niquests.Session() as session:
+            loggedIn = False
+            if os.path.exists(cookiefile):
+                with open(cookiefile, "rb") as cf:
+                    session.cookies.update(pickle.load(cf))
+                r = session.get("https://s3.pterclub.com")
+                loggedIn = await self.validate_login(r)
+            else:
+                console.print("[yellow]Pterimg Cookies not found. Creating new session.")
+            if loggedIn:
+                auth_token = re.search(r"auth_token.*?\"(\w+)\"", r.text).groups()[0]
+            else:
+                data = {"login-subject": self.username, "password": self.password, "keep-login": 1}
+                r = session.get("https://s3.pterclub.com")
+                data["auth_token"] = re.search(r"auth_token.*?\"(\w+)\"", r.text).groups()[0]
+                loginresponse = session.post(url="https://s3.pterclub.com/login", data=data)
+                if not loginresponse.ok:
+                    raise LoginException("Failed to login to Pterimg. ")
+                auth_token = re.search(r"auth_token = *?\"(\w+)\"", loginresponse.text).groups()[0]
+                with open(cookiefile, "wb") as cf:
+                    pickle.dump(session.cookies, cf)
+
+        return auth_token
+
+    async def validate_login(self, response):
+        if response.text.find("""<a href="https://s3.pterclub.com/logout/?""") != -1:
+            loggedIn = True
+        else:
+            loggedIn = False
+        return loggedIn
+
+    async def pterimg_upload(self, meta):
+        images = glob.glob(f"{meta['base_dir']}/tmp/{meta['uuid']}/{meta['filename']}-*.png")
+        url = "https://s3.pterclub.com"
+        image_list = []
+        data = {"type": "file", "action": "upload", "nsfw": 0, "auth_token": await self.get_auth_token(meta)}
+        cookiefile = f"{meta['base_dir']}/data/cookies/Pterimg.pickle"
+        with niquests.Session() as session:
+            if os.path.exists(cookiefile):
+                with open(cookiefile, "rb") as cf:
+                    session.cookies.update(pickle.load(cf))
+                    files = {}
+                    for i in range(len(images)):
+                        with open(images[i], "rb") as f:
+                            files = {"source": f}
+                            req = session.post(f"{url}/json", data=data, files=files)
+                            try:
+                                res = req.json()
+                            except json.decoder.JSONDecodeError:
+                                res = {}
+                            if not req.ok:
+                                if res["error"]["message"] in ("重复上传", "Duplicated upload"):
+                                    continue
+                                raise (f"HTTP {req.status_code}, reason: {res['error']['message']}")
+                            image_dict = {}
+                            image_dict["web_url"] = res["image"]["url"]
+                            image_dict["img_url"] = res["image"]["url"]
+                            image_list.append(image_dict)
+        return image_list
+
+    async def get_anon(self, anon):
+        anon = "no" if anon == 0 and not self.config["TRACKERS"][self.tracker].get("anon", False) else "yes"
+        return anon
+
+    async def edit_name(self, meta):
+        pter_name = meta["name"]
+
+        remove_list = ["Dubbed", "Dual-Audio"]
+        for each in remove_list:
+            pter_name = pter_name.replace(each, "")
+
+        pter_name = pter_name.replace(meta["aka"], "")
+        pter_name = pter_name.replace("PQ10", "HDR")
+
+        if meta["type"] == "WEBDL" and meta.get("has_encode_settings", False):
+            pter_name = pter_name.replace("H.264", "x264")
+
+        meta[f"{self.tracker}_name"] = pter_name
+        return pter_name
+
+    async def is_zhongzi(self, meta):
+        if meta.get("is_disc", "") != "BDMV":
+            mihandle = MediaInfoHandler()
+            mi = mihandle._cache.get(meta["uuid"])
+            for track in mi["media"]["track"]:
+                if track["@type"] == "Text":
+                    language = track.get("Language")
+                    if language == "zh":
+                        return "yes"
+        else:
+            for language in meta["bdinfo"]["subtitles"]:
+                if language == "Chinese":
+                    return "yes"
+        return None
+
+    async def upload(self, meta):
+        common = COMMON(config=self.config)
+        await edit_torrent(meta, self.tracker, self.source_flag, self.announce_url)
+
+        desc_file = f"{meta['base_dir']}/tmp/{meta['uuid']}/[{self.tracker}]DESCRIPTION.txt"
+        if not os.path.exists(desc_file):
+            await self.edit_desc(meta)
+
+        pter_name = meta.get(f"{self.tracker}_name") or await self.edit_name(meta)
+
+        pter_desc = open(desc_file, encoding="utf-8").read()
+        torrent_path = f"{meta['base_dir']}/tmp/{meta['uuid']}/[{self.tracker}]{meta['clean_name']}.torrent"
+
+        with open(torrent_path, "rb") as torrentFile:
+            if len(meta["filelist"]) == 1:
+                torrentFileName = unidecode(os.path.basename(meta["video"]).replace(" ", "."))
+            else:
+                torrentFileName = unidecode(os.path.basename(meta["path"]).replace(" ", "."))
+            files = {"file": (f"{torrentFileName}.torrent", torrentFile, "application/x-bittorent")}
+
+            # use chinese small_descr
+            if meta["ptgen"]["trans_title"] != [""]:
+                small_descr = ""
+                for title_ in meta["ptgen"]["trans_title"]:
+                    small_descr += f"{title_} / "
+                small_descr += "| 类别:" + meta["ptgen"]["genre"][0]
+                small_descr = small_descr.replace("/ |", "|")
+            else:
+                small_descr = meta["title"]
+            data = {
+                "name": pter_name,
+                "small_descr": small_descr,
+                "descr": pter_desc,
+                "type": await self.get_type_category_id(meta),
+                "source_sel": await self.get_type_medium_id(meta),
+                "team_sel": await self.get_area_id(meta),
+                "uplver": await self.get_anon(meta["anon"]),
+                "zhongzi": await self.is_zhongzi(meta),
+            }
+
+            if meta.get("personalrelease", False):
+                data["pr"] = "yes"
+
+            url = "https://pterclub.com/takeupload.php"
+
+            # Submit
+            if meta["debug"]:
+                console.print(url)
+                console.print(data)
+            else:
+                cookiefile = f"{meta['base_dir']}/data/cookies/PTER.txt"
+                if os.path.exists(cookiefile):
+                    with niquests.Session() as session:
+                        session.cookies.update(await common.parseCookieFile(cookiefile))
+                        up = session.post(url=url, data=data, files=files)
+
+                        if up.url.startswith("https://pterclub.com/details.php?id="):
+                            console.print(
+                                f"[green]Uploaded to: [yellow]{up.url.replace('&uploaded=1', '')}[/yellow][/green]"
+                            )
+                            id = re.search(r"(id=)(\d+)", urlparse(up.url).query).group(2)
+                            await self.download_new_torrent(id, torrent_path)
+                        else:
+                            console.print(data)
+                            console.print("\n\n")
+                            raise UploadException(
+                                f"Upload to Pter Failed: result URL {up.url} ({up.status_code}) was not expected",
+                                "red",
+                            )
+        return
+
+    async def download_new_torrent(self, id, torrent_path):
+        download_url = f"https://pterclub.com/download.php?id={id}&passkey={self.passkey}"
+        r = niquests.get(url=download_url)
+        if r.status_code == 200:
+            with open(torrent_path, "wb") as tor:
+                tor.write(r.content)
+        else:
+            console.print("[red]There was an issue downloading the new .torrent from pter")
+            console.print(r.text)

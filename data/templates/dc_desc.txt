@@ -1,0 +1,15 @@
+{{ tmdb_url }}
+{{ imdb_url }}{% if tvdb_url %}
+{{ tvdb_url }}{% endif %}{% if mal_url %}
+{{ mal_url }}{% endif %}
+
+
+{{ overview }}
+
+
+{% if main_images %}
+{{ main_images }}{% endif %}{% if category == 'TV' and episodes %}
+{{ episodes }}{% endif %}
+
+{% if nfo %}[nfo]{{ nfo }}[/nfo]{% endif %}
+{{signature}}

@@ -1,0 +1,1075 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import re
+import urllib.parse
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+import aiofiles
+import niquests
+from jinja2 import Template
+
+from src.progress import ProgressManager
+from src.utils.bbcode import BBCODE
+from src.version import version
+
+from .console import log
+
+
+@dataclass
+class DescControl:
+    """Controller for description handling via comment"""
+
+    as_is: bool = False
+    include_screens: bool = True
+    include_logo: bool = True
+    include_trailer: bool = True
+    include_signature: bool = True
+    modify_img_size: bool = True
+    include_disc_info: bool = True
+
+    @staticmethod
+    def from_markers(marker_str: str) -> DescControl:
+        control = DescControl()
+        if not marker_str.startswith("# USE:"):
+            return control
+
+        options = marker_str[len("# USE:") :].strip().split("+")
+        main_option = options[0].lower()
+
+        if main_option == "as-is":
+            control.as_is = True
+            control.include_screens = False
+            control.include_logo = False
+            control.include_trailer = False
+            control.include_signature = False
+            control.include_disc_info = False
+        elif main_option == "signature-only":
+            control.as_is = False
+            control.include_screens = False
+            control.include_logo = False
+            control.include_trailer = False
+            control.include_signature = True
+            control.include_disc_info = False
+        elif main_option == "full":
+            control.as_is = False
+        else:
+            control.as_is = False
+            control.include_screens = "screens" in options
+            control.include_logo = "logo" in options
+            control.include_trailer = "trailer" in options
+            control.include_signature = "signature" in options or "sig" in options
+            control.include_disc_info = "disc" in options
+
+        if "no-imgsize" in marker_str.lower():
+            control.modify_img_size = False
+
+        return control
+
+
+def _render_tracklines(tracks: dict[str, dict[str, str]]) -> str:
+    lines: list[str] = []
+    for disc_tracks in tracks.values():
+        max_len = max(len(track) for track in disc_tracks)
+        lines.extend(
+            f"{track}{' ' * (max_len - len(track) + 2)}[{time}]" for track, time in disc_tracks.items()
+        )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _format_single_disc_tracklines(disc_tracks: dict[str, str]) -> str:
+    return "\n".join(f"{track}{' ' * (52 - len(track))}[{time}]" for track, time in disc_tracks.items())
+
+
+class DescGenerator:
+    """
+    Utility for generating descriptions based on metadata.
+    Handles various sources like PTP, BLU, templates, NFO, links, and custom files.
+    Also handles formatting for specific trackers.
+    """
+
+    def __init__(self, config: dict, base_dir: Path):
+        self.config = config
+        self.base_dir = base_dir
+        self.pm = ProgressManager.get_instance()
+
+    async def read_file(self, file_path: str) -> str:
+        if not file_path or not Path(file_path).is_file():
+            return ""
+        for encoding in ("utf-16", "utf-8", "latin-1"):
+            try:
+                return await asyncio.to_thread(Path(file_path).read_text, encoding=encoding, errors="strict")
+            except (OSError, UnicodeError):
+                continue
+        return ""
+
+    async def gen_desc(self, meta: dict) -> dict:
+        desclink = meta.get("desclink")
+        auto_desc = meta.get("auto_desc", False) or self.config["AUTO"].get("always_aid", False)
+        nfo_file = meta.get("nfo_file")
+        description_path = self.base_dir / "tmp" / f"{meta['uuid']}" / "DESCRIPTION.txt"
+        descfile_content = ""
+        custom_desc_written = False
+
+        if self.pm:
+            self.pm.update("Generating description...")
+
+        description_path.parent.mkdir(parents=True, exist_ok=True)
+
+        async with aiofiles.open(description_path, "w", newline="", encoding="utf-8") as description:
+            if (desclink, meta.get("descfile"), meta["desc"]) == (None, None, None):
+                # desc_source = None
+                # if meta.get("ptp_manual") is not None:
+                #     desc_source.append("PTP")
+                # if meta.get("blu_manual") is not None:
+                #     desc_source.append("BLU")
+                # desc_source = desc_source[0] if len(desc_source) == 1 else None
+
+                # Try PTP description via API
+                if (
+                    meta.get("ptp")
+                    and str(self.config["TRACKERS"].get("PTP", {}).get("useAPI")).lower() == "true"
+                    # and desc_source in ["PTP", None]
+                ):
+                    from src.trackers.PTP import PTP
+
+                    ptp = PTP(config=self.config)
+                    ptp_desc = await ptp.get_ptp_description(meta["ptp"], meta["is_disc"])
+                    if ptp_desc.strip():
+                        await description.write(ptp_desc)
+                        await description.write("\n")
+                        meta["description"] = "PTP"
+                        custom_desc_written = True
+
+                # Try BLU description
+                blu_desc = meta.get("blu_desc", "")
+                if not custom_desc_written and blu_desc:
+                    trusted_uploaders = self.config["AUTO"].get("trusted_uploader", [])
+
+                    if trusted_uploaders:
+                        uploader = meta.get("blu_data").get("uploader")
+                        if uploader in trusted_uploaders or uploader == "USE_ALL":
+                            use_blu_desc = True
+                        else:
+                            use_blu_desc = False
+                            log.debug(f"BLU uploader '{uploader}' not in trusted list: {trusted_uploaders}")
+
+                        if use_blu_desc:
+                            blu_desc = meta["blu_desc"].strip()
+                            if blu_desc:
+                                await description.write("# USE: as-is")
+                                await description.write(blu_desc)
+                                meta["description"] = "BLU"
+                                custom_desc_written = True
+
+                # Try Jinja2 template
+                if meta.get("desc_template"):
+                    template_path = (
+                        Path(meta["base_dir"]) / "data" / "templates" / f"{meta['desc_template']}.txt"
+                    )
+                    if template_path.is_file():
+                        with open(template_path, encoding="utf-8") as f:
+                            desc_template = Template(f.read())
+                            template_desc = desc_template.render(meta)
+                            if template_desc.strip():
+                                await description.write(template_desc)
+                                await description.write("\n")
+                                custom_desc_written = True
+
+                # Add NFO file if requested
+                if meta["nfo"] and nfo_file and not meta.get("no_nfo"):
+                    nfo_path = Path(nfo_file)
+                    if nfo_path.is_file():
+                        async with aiofiles.open(nfo_path, encoding="utf-8") as nfo_f:
+                            nfo_content = await nfo_f.read()
+                        await description.write("\n[code]")
+                        await description.write(nfo_content)
+                        await description.write("[/code]\n")
+                        meta["description"] = "CUSTOM"
+                        custom_desc_written = True
+
+                if desclink:
+                    parsed = urllib.parse.urlparse(desclink.replace("/raw/", "/"))
+                    split_path = parsed.path.rstrip("/").split("/")
+                    if len(split_path) > 1:
+                        new_path = "/" + "/".join([*split_path[:-1], "raw", split_path[-1]])
+                    else:
+                        new_path = "/raw" + parsed.path
+
+                    raw_url = parsed._replace(path=new_path)
+                    raw_str = urllib.parse.urlunparse(raw_url)
+                    response = niquests.get(raw_str)
+                    response.encoding = "utf-8"
+                    await description.write(response.text)
+                    await description.write("\n")
+                    meta["description"] = "CUSTOM"
+                    custom_desc_written = True
+
+                # Auto-desc from local file
+                if auto_desc:
+                    path = Path(meta.get("path", ""))
+                    uuid = meta.get("uuid", "")
+                    if uuid:
+                        uuid = Path(uuid).stem
+                    desc_folder = self.config["AUTO"].get("description_folder")
+                    descfile = None
+
+                    if desc_folder:
+                        desc_folder = Path(desc_folder)
+                        if desc_folder.is_dir():
+                            potential_file = desc_folder / f"{uuid}.txt"
+                            if potential_file.is_file():
+                                descfile = potential_file
+
+                    if descfile is None and path.exists():
+                        if path.is_file():
+                            descfile = path.with_suffix(".txt")
+                            if not descfile.is_file():
+                                descfile = path.parent / f"{uuid}.txt"
+                        elif path.is_dir():
+                            descfile = path / f"{uuid}.txt"
+                            if not descfile.is_file():
+                                descfile = path / "description.txt"
+
+                    if descfile and descfile.is_file():
+                        async with aiofiles.open(descfile, encoding="utf-8") as f:
+                            descfile_content = await f.read()
+                        if not any(
+                            line.strip().startswith("# USE:") for line in descfile_content.splitlines()
+                        ):
+                            descfile_content = "# USE: full\n" + descfile_content
+                        await description.write("\n" + descfile_content + "\n")
+                        meta["description"] = "CUSTOM"
+                        custom_desc_written = True
+
+                # Manual desc
+                desc = meta.get("desc")
+                if desc and desc != descfile_content:
+                    await description.write("\n" + desc + "\n")
+                    meta["description"] = "CUSTOM"
+                    custom_desc_written = True
+
+                # External descfile
+                descfile_path = meta.get("descfile")
+                if descfile_path:
+                    p = Path(descfile_path)
+                    if p.is_file():
+                        async with aiofiles.open(p, encoding="utf-8") as f:
+                            descfile_text = await f.read()
+                        await description.write("\n" + descfile_text + "\n")
+                        meta["description"] = "CUSTOM"
+                        custom_desc_written = True
+
+                # Final fallback: write meta["desc"] if present
+                if meta.get("desc"):
+                    await description.write("\n" + meta["desc"] + "\n")
+                    meta["description"] = "CUSTOM"
+                    custom_desc_written = True
+
+        if self.pm:
+            self.pm.update("Description generation complete")
+
+        return meta
+
+    async def edit_desc(
+        self,
+        meta: dict,
+        tracker: str,
+        comparison: bool = False,
+        desc_header: str = "",
+        whitelist: list[str] | None = None,
+        img_size: int | None = None,
+    ):
+        """Main method to format description for trackers."""
+        # Read base description
+        base_description_path = Path(meta["base_dir"]) / "tmp" / meta["uuid"] / "DESCRIPTION.txt"
+        async with aiofiles.open(base_description_path, encoding="utf-8") as basefile:
+            base = await basefile.read()
+
+        # Parse control markers
+        control = DescControl()
+        lines = base.splitlines()
+        filtered_lines = []
+        for line in lines:
+            if line.strip().startswith("# USE:"):
+                control = DescControl.from_markers(line.strip())
+                # Don't add the control line to the base content
+            else:
+                filtered_lines.append(line)
+        base = "\n".join(filtered_lines)
+
+        # Open output file
+        output_description_path = (
+            Path(meta["base_dir"]) / "tmp" / meta["uuid"] / f"[{tracker}]DESCRIPTION.txt"
+        )
+        async with aiofiles.open(output_description_path, "w", encoding="utf-8") as descfile:
+            if desc_header:
+                await descfile.write(desc_header)
+
+            bbcode = BBCODE()
+
+            # Write media elements (trailer/logo)
+            if (
+                not control.as_is
+                and (control.include_trailer or control.include_logo)
+                and (meta.get("description") not in ("BLU", "PTP"))
+            ):
+                await self._write_media_elements(descfile, meta, tracker, control, img_size)
+
+            # Write disc info if enabled
+            if control.include_disc_info and not control.as_is:
+                await self._write_disc_info(descfile, meta.get("discs", []))
+
+            # Process base description
+            if control.as_is:
+                await descfile.write(base)
+            else:
+                desc = bbcode.convert_pre_to_code(base)
+                desc = bbcode.convert_hide_to_spoiler(desc)
+                if tracker in ("LDU", "BLU", "LST", "RHD", "RF", "AITHER"):
+                    comparison = True
+                if not comparison:
+                    desc = bbcode.convert_comparison_to_collapse(desc, 1000)
+                await descfile.write(desc)
+
+            # Handle music Description
+            if meta.get("is_music", False):
+                await self.create_music_description(meta, tracker)
+                return  # Music has its own flow, skip further processing
+
+            # Handle XXX Description
+            if meta.get("xxx", False):
+                await self._xxx_description(descfile, meta, tracker)
+
+            # Write images
+            if control.include_screens and not control.as_is:
+                await self._write_images(descfile, meta, tracker, whitelist, control, img_size)
+
+            # Write signature
+            if control.include_signature and not control.as_is:
+                await self._write_signature(descfile, meta, tracker, img_size)
+
+        return
+
+    async def _write_disc_info(self, descfile, discs: list[dict]):
+        """Helper method to write disc information"""
+        if not discs:
+            return
+
+        if discs[0]["type"] == "DVD":
+            await descfile.write(f"[spoiler=VOB MediaInfo][code]{discs[0]['vob_mi']}[/code][/spoiler]\n\n")
+
+        if len(discs) >= 2:
+            for disc in discs[1:]:
+                if disc["type"] == "BDMV":
+                    await descfile.write(
+                        f"[spoiler={disc.get('name', 'BDINFO')}][code]{disc['summary']}[/code][/spoiler]\n\n"
+                    )
+                elif disc["type"] == "DVD":
+                    await descfile.write(f"{disc['name']}:\n")
+                    await descfile.write(
+                        f"[spoiler={os.path.basename(disc['vob'])}][code][{disc['vob_mi']}[/code][/spoiler] "
+                        f"[spoiler={os.path.basename(disc['ifo'])}][code][{disc['ifo_mi']}[/code][/spoiler]\n\n"
+                    )
+                elif disc["type"] == "HDDVD":
+                    await descfile.write(f"{disc['name']}:\n")
+                    await descfile.write(
+                        f"[spoiler={os.path.basename(disc['largest_evo'])}][code][{disc['evo_mi']}[/code][/spoiler]\n\n"
+                    )
+
+    async def _write_media_elements(
+        self, descfile, meta: dict, tracker: str, control: DescControl, img_size: int | None = None
+    ):
+        """Helper method to write trailer and logo based on control"""
+        if control.include_trailer and tracker not in ("AITHER", "CBR", "OE", "TMG", "TL"):
+            if self.config["DEFAULT"].get("add_trailer", False) and meta.get("category") == "MOVIE":
+                if key := meta.get("youtube"):
+                    await descfile.write(f"[center][youtube]{key}[/youtube][/center]")
+
+        if control.include_logo and self.config["DEFAULT"].get("add_logo", False):
+            if logo := meta.get("logo"):
+                logo_size = self.config["DEFAULT"].get("logo_size", 420)
+                if img_size == 0:
+                    await descfile.write(f"[center][img]{logo}[/img][/center]")
+                else:
+                    await descfile.write(f"[center][img={logo_size}]{logo}[/img][/center]")
+
+    async def _get_valid_images(self, meta: dict, tracker: str, whitelist: list[str] | None = None):
+        """Helper method to get valid images based on whitelist."""
+        whitelist = whitelist if whitelist is not None else []
+        num_screens = int(meta.get("screens", 0)) or 3
+        per_episode = (
+            self.config["SCREENS"].get("per_episode", 3) if meta.get("per_episode_screens", True) else 0
+        )
+
+        def _base_domain(hostname: str) -> str:
+            if not hostname:
+                return ""
+            parts = hostname.split(".")
+            if len(parts) >= 2:
+                return parts[-2]
+            return hostname
+
+        normalized_whitelist = {_base_domain(host) for host in whitelist}
+        full_whitelist_set = set(whitelist)
+
+        # Initialize image lists
+        image_list = meta.get("image_list")
+        if isinstance(image_list, list):  # backwards compatibility
+            image_list = {"main": image_list, "episodes": {}, "contact_sheets": []}
+        rehost_list = meta.get("rehost_list", {})
+        result = {"main": [], "episodes": {}, "contact_sheets": []}
+
+        if "contact_sheets" in image_list:
+            result["contact_sheets"] = image_list["contact_sheets"]
+
+        # If whitelist is empty or None, use all images from image_list
+        if not whitelist:
+            result["main"] = image_list["main"][:num_screens]
+            if per_episode > 0:
+                for ep_name, ep_images in image_list["episodes"].items():
+                    result["episodes"][ep_name] = ep_images[:per_episode]
+            log.debug(
+                f"No whitelist for tracker {tracker}, using {len(result['main'])} main images and {len(result['episodes'])} episode sets from image_list"
+            )
+            return result
+
+        # Helper function to check if an image is valid for the whitelist
+        def is_valid_image(image):
+            url = image.get("img_url") or image.get("raw_url") or image.get("web_url")
+            if not url:
+                return False
+            domain = urlparse(url).hostname or ""
+            domain_key = _base_domain(domain)
+            return domain in full_whitelist_set or domain_key in normalized_whitelist
+
+        # Check image_list first
+        for image in image_list["main"]:
+            if is_valid_image(image):
+                result["main"].append(image)
+            if len(result["main"]) >= num_screens:
+                break
+
+        if per_episode > 0:
+            for ep_name, ep_images in image_list["episodes"].items():
+                valid_ep_images = []
+                for image in ep_images:
+                    if is_valid_image(image):
+                        valid_ep_images.append(image)
+                    if len(valid_ep_images) >= per_episode:
+                        break
+                if valid_ep_images:
+                    result["episodes"][ep_name] = valid_ep_images
+
+        # Fall back to rehost_list if needed
+        if len(result["main"]) < num_screens or (
+            per_episode > 0 and any(len(ep_images) < per_episode for ep_images in result["episodes"].values())
+        ):
+            for host_key in rehost_list:
+                if host_key not in full_whitelist_set and host_key not in normalized_whitelist:
+                    continue
+                rehost_images = rehost_list[host_key]
+                # Fill main images
+                if len(result["main"]) < num_screens:
+                    for image in rehost_images.get("main", []):
+                        if is_valid_image(image):
+                            result["main"].append(image)
+                        if len(result["main"]) >= num_screens:
+                            break
+                # Fill episode images
+                if per_episode > 0:
+                    for ep_name, ep_images in rehost_images.get("episodes", {}).items():
+                        if ep_name in result["episodes"] and len(result["episodes"][ep_name]) >= per_episode:
+                            continue
+                        valid_ep_images = result["episodes"].get(ep_name, [])
+                        for image in ep_images:
+                            if is_valid_image(image):
+                                valid_ep_images.append(image)
+                            if len(valid_ep_images) >= per_episode:
+                                break
+                        if valid_ep_images:
+                            result["episodes"][ep_name] = valid_ep_images
+
+        # Log warnings if insufficient images
+        if len(result["main"]) < num_screens:
+            log.warning(
+                f"Tracker {tracker}: Found only {len(result['main'])} of {num_screens} required main images matching whitelist {whitelist}"
+            )
+        if per_episode > 0:
+            for ep_name, ep_images in result["episodes"].items():
+                if len(ep_images) < per_episode:
+                    log.warning(
+                        f"Tracker {tracker}: Found only {len(ep_images)} of {per_episode} required images for episode {ep_name} matching whitelist {whitelist}"
+                    )
+
+        log.debug(
+            f"Tracker {tracker}: Selected {len(result['main'])} main images and {len(result['episodes'])} episode sets matching whitelist {whitelist}"
+        )
+        return result
+
+    async def _xxx_description(self, descfile, meta: dict, tracker: str):
+        """Helper method to write XXX description."""
+        porndb = meta.get("porndb") or {}
+        trailer = meta.get("trailer_url") if meta.get("trailer_url") != "" else None
+        if not trailer:
+            for img in meta.get("image_list", {}).get("trailer", []):
+                trailer = img.get("raw_url") or img.get("img_url") or img.get("web_url")
+                if trailer:
+                    break
+        if trailer and tracker != "BT":
+            await descfile.write(f"[center][img]{trailer}[/img][/center]\n\n")
+        if tracker == "BT":
+            year = porndb.get("year") or meta.get("search_year")
+            await descfile.write(f"[align=center][size=5]{meta['title']} ({year})[/size][/align]\n\n")
+        if porndb:
+            desc = porndb.get("description", "").strip() or "N/A"
+            perf = porndb.get("performers", "").strip() or "N/A"
+            await descfile.write(f"[h4][color=#91FFF7]DESCRIPTION[/color][/h4][b]{desc}[/b]\n\n")
+            await descfile.write(f"[h4][color=#91FFF7]PERFORMERS[/color][/h4][b]{perf}[/b]\n\n")
+        if tracker == "LDU":
+            # LDU doesn't support api cover/banner upload they have a workaround but it must be .jpg
+            cover = next(
+                (
+                    url
+                    for url in [porndb.get("poster"), meta.get("cover_url")]
+                    if url and url.endswith((".jpg", ".jpeg"))
+                ),
+                porndb.get("poster") or meta.get("cover_url"),
+            )
+
+            banner = next(
+                (
+                    url
+                    for url in [porndb.get("image"), meta.get("banner_url")]
+                    if url and url.endswith((".jpg", ".jpeg"))
+                ),
+                porndb.get("image") or meta.get("banner_url"),
+            )
+
+            await descfile.write(f"[url=torrent-cover={cover} ][/url] [url=torrent-banner={banner} ][/url]")
+        return
+
+    async def _write_images(
+        self,
+        descfile,
+        meta: dict,
+        tracker: str,
+        whitelist: list[str] | None = None,
+        control: DescControl = None,
+        img_size: int | None = None,
+    ):
+        """Helper method to write images."""
+        if meta.get("screens", 0) == 0 or tracker == "BT":
+            return
+        images = await self._get_valid_images(meta, tracker, whitelist)
+        if not images["main"] and not images["episodes"]:
+            return
+
+        if img_size is None:
+            img_size = (
+                350 if tracker in ("CBR", "TVC", "PTP") else self.config["DEFAULT"].get("img_size", 500)
+            )
+        if control and not control.modify_img_size:
+            img_size = ""  # No size modification
+        if int(img_size) == 0:
+            img_size = ""
+
+        inline_imgs = int(self.config["DEFAULT"].get("inline_imgs", 0)) or 0
+
+        # Write main images
+        await descfile.write("\n[center]")
+        for i, image in enumerate(images["main"]):
+            try:
+                img_tag = f"[img={img_size}]" if img_size else "[img]"
+                if tracker in ("PTP", "TMG"):
+                    await descfile.write(f"[img]{image['raw_url']}[/img]")
+                elif tracker in ("HDS", "TL"):
+                    await descfile.write(f"[url={image['web_url']}][img]{image['img_url']}[/img][/url]")
+                else:
+                    await descfile.write(f"[url={image['web_url']}]{img_tag}{image['raw_url']}[/img][/url] ")
+                if inline_imgs and i % inline_imgs == inline_imgs - 1:
+                    await descfile.write("\n")
+            except (KeyError, TypeError):
+                continue
+        await descfile.write("[/center]")
+
+        # Write episode images
+        if meta.get("tv_pack") and meta.get("per_episode_screens", True) and images["episodes"]:
+            await descfile.write("\n[center][spoiler=Episode Screens]")
+            for ep_name, ep_images in images["episodes"].items():
+                if ep_name.upper() == "E01":
+                    continue  # E01 was already included in main images
+                ep_num = "".join(c for c in ep_name[1:] if c.isdigit())
+                display_name = "OVA" if ep_name == "OVA" else f"Episode {int(ep_num)}" if ep_num else ep_name
+                await descfile.write(f"\n[spoiler={display_name}][center]")
+                for i, image in enumerate(ep_images):
+                    try:
+                        img_tag = f"[img={img_size}]" if img_size else "[img]"
+                        await descfile.write(
+                            f"[url={image['web_url']}]{img_tag}{image['raw_url']}[/img][/url] "
+                        )
+                        if inline_imgs and i % inline_imgs == inline_imgs - 1:
+                            await descfile.write("\n")
+                    except (KeyError, TypeError):
+                        continue
+                await descfile.write("[/center][/spoiler]")
+            await descfile.write("\n[/spoiler][/center]")
+
+        # Write contact sheet
+        if meta.get("xxx") and not self.config["SCREENS"].get("contact_sheet", {}).get("skip"):
+            await descfile.write("\n[center]")
+            for _i, image in enumerate(images["contact_sheets"]):
+                try:
+                    # img_tag = f"[img={self.config['SCREENS'].get('ADULT', {}).get('contact_size', 800)}]" if img_size else "[img]"
+                    img_tag = "[img]"
+                    await descfile.write(f"{img_tag}{image['raw_url']}[/img]")
+                except (KeyError, TypeError):
+                    continue
+            await descfile.write("[/center]")
+
+    async def _write_signature(self, descfile, meta: dict, tracker: str, img_size: int | None = None):
+        """Helper method to write signature."""
+        use_global_sigs = self.config["SIGNATURES"].get("use_global_sigs", "default")
+
+        if use_global_sigs is None:
+            return  # easy mode for NO SIGS!
+        elif use_global_sigs is True:
+            sig_config = self.config["SIGNATURES"]
+        elif use_global_sigs is False:
+            sig_config = self.config["TRACKERS"].get(tracker, {})
+        else:
+            tracker_config = self.config["TRACKERS"].get(tracker, {})
+            sig_config = tracker_config
+
+        xanon = meta.get("xxx") and self.config["TRACKERS"].get(tracker, {}).get("xanon", False)
+        is_anon = (
+            meta.get("anon", 0) != 0 or self.config["TRACKERS"].get(tracker, {}).get("anon", False) or xanon
+        )
+        is_pr = meta.get("personal_release", False)
+        sig_key = (
+            "anon_pr_sig"
+            if is_anon and is_pr
+            else "pr_signature"
+            if is_pr
+            else "anon_signature"
+            if is_anon
+            else "signature"
+        )
+
+        if not tracker_config.get(sig_key):
+            sig_config = self.config["SIGNATURES"]
+
+        sig_types = {
+            "signature": sig_config.get("signature"),
+            "anon_signature": sig_config.get("anon_signature"),
+            "pr_signature": sig_config.get("pr_signature"),
+            "anon_pr_sig": sig_config.get("anon_pr_signature"),
+        }
+
+        uploadrr_sig = f"[right][url=https://codeberg.org/CvT/Uploadrr]Uploadrr v{version}[/url][/right]"
+        # Write signature if it exists
+        if sig := sig_types.get(sig_key):
+            if sig.lower() == "uploadrr":
+                sig = uploadrr_sig
+
+            if img_size == 0:
+                sig = re.sub(r"\[img=[^\]]+", "[img", sig)
+            sig = sig.replace("[uploadrr]", uploadrr_sig)
+            await descfile.write(f"\n{sig}")
+
+    async def create_music_description(self, meta: dict, tracker: str):
+        """Helper method to create music-specific description."""
+        output_description_path = (
+            Path(meta["base_dir"]) / "tmp" / meta["uuid"] / f"[{tracker}]DESCRIPTION.txt"
+        )
+        async with aiofiles.open(output_description_path, "w", encoding="utf-8") as descfile:
+
+            def center_img(url, size=120, link=None):
+                img = f"[img={size}]{url}[/img]" if size else f"[img]{url}[/img]"
+                return f"[center]{f'[url={link}]{img}[/url]' if link else img}[/center]\n\n"
+
+            album_cover = meta.get("album_cover")
+            album_back = meta.get("album_back")
+            display_cover = self.config["DEFAULT"].get("album_covers", 2)
+
+            if display_cover >= 1:
+                if album_cover:
+                    img_line = f"[center][img]{album_cover}[/img]"
+                    if display_cover >= 2 and album_back:
+                        img_line += f" [img]{album_back}[/img]"
+                    await descfile.write(img_line + "[/center]\n\n")
+                elif album_back:
+                    await descfile.write(center_img(album_back, size=0))
+
+            proof = meta.get("proof_url")
+            if proof:
+                await descfile.write(
+                    f"[center][spoiler=Proof][center][img=500]{proof}[/img][/center][/spoiler][/center]\n\n"
+                )
+
+            # Logos with URLs
+            logos = {
+                "mbid": (
+                    "https://musicbrainz.org/release/{}",
+                    r"https://upload.wikimedia.org/wikipedia/commons/f/f2/MusicBrainz_Logo_Mini_%282016%29.svg",
+                ),
+                "musicbrainz_url": (
+                    "{}",
+                    r"https://upload.wikimedia.org/wikipedia/commons/f/f2/MusicBrainz_Logo_Mini_%282016%29.svg",
+                ),
+                "discogs_id": (
+                    "https://www.discogs.com/release/{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/f/ff/Discogs_logo_white.svg",
+                ),
+                "discogs_master": (
+                    "https://www.discogs.com/master/{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/f/ff/Discogs_logo_white.svg",
+                ),
+                "discogs_url": (
+                    "{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/f/ff/Discogs_logo_white.svg",
+                ),
+                "allmusic": (
+                    "{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/6/65/All_Music_Guide_Logo.svg",
+                ),
+                "wikidata": (
+                    "{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/6/66/Wikidata-logo-en.svg",
+                ),
+                "genius": ("{}", "https://upload.wikimedia.org/wikipedia/commons/c/cd/Genius-Wordmark.svg"),
+                "qobuz_url": (
+                    "{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/7/7a/Qobuz_logo_light.svg",
+                ),
+                "spotify_url": (
+                    "{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/b/bd/2024_Spotify_Logo.svg",
+                ),
+                "tidal_url": (
+                    "{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/1/18/Tidal_%28service%29_logo.svg",
+                ),
+                "deezer": (
+                    "{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/7/75/Deezer_logo%2C_2023.svg",
+                ),
+                "apple_music": (
+                    "{}",
+                    "https://upload.wikimedia.org/wikipedia/commons/2/2a/Apple_Music_logo.svg",
+                ),
+            }
+
+            for key, (url_tpl, img_url) in logos.items():
+                if key == "deezer":
+                    val = meta.get("deezer_info", {}).get("link")
+                elif key == "apple_music":
+                    other_dbs = meta.get("mb_info", {}).get("relations", {}).get("other_databases", [])
+                    if other_dbs:
+                        if isinstance(other_dbs, list):
+                            urls = other_dbs
+                        else:
+                            urls = [u.strip() for u in other_dbs.split(",")]
+                        val = next((u for u in urls if "https://music.apple.com/" in u), None)
+                    else:
+                        val = None
+                else:
+                    val = meta.get(key)
+                if val:
+                    url = url_tpl.format(val)
+                    await descfile.write(center_img(img_url, link=url))
+
+            # Tracklist and logs
+            if notes := meta.get("nfo_notes"):
+                await descfile.write(f"\n[code]{notes}[/code]\n")
+            tracks = meta.get("tracklist", {})
+            if tracks:
+                await descfile.write("\n[code][h5]TRACKLIST[/h5]\n")
+                log_files = meta.get("log_files", [])
+                foo_dr = meta.get("foo_dr", [])
+                aucdtect = meta.get("aucdtect", [])
+                if len(tracks) > 1:
+                    for idx, (disc, disc_tracks) in enumerate(tracks.items()):
+                        block = "[u]" + disc + "[/u]\n" + _render_tracklines({disc: disc_tracks})
+                        await descfile.write(block)
+                        if idx < len(log_files) and (log := await self.read_file(log_files[idx])):
+                            await descfile.write(f"\n[spoiler=log][code]{log}[/code][/spoiler]\n")
+                        if idx < len(foo_dr) and foo_dr[idx][1]:
+                            label = "foo_DR" if len(foo_dr) == 1 else f"foo_DR Disc {idx + 1}"
+                            await descfile.write(
+                                f"\n[spoiler={label}][code]{foo_dr[idx][1]}[/code][/spoiler]"
+                            )
+                        if idx < len(aucdtect) and aucdtect[idx][1]:
+                            label = "auCDtect" if len(aucdtect) == 1 else f"auCDtect Disc {idx + 1}"
+                            await descfile.write(
+                                f"\n[spoiler={label}][code]{aucdtect[idx][1]}[/code][/spoiler]\n"
+                            )
+                else:
+                    disc_tracks = next(iter(tracks.values()))
+                    await descfile.write(_format_single_disc_tracklines(disc_tracks))
+                    if log_files:
+                        if (log := await self.read_file(log_files[0])) is not None:
+                            await descfile.write(f"\n\n[spoiler=log][code]{log}[/code][/spoiler]")
+                    if foo_dr and foo_dr[0][1]:
+                        await descfile.write(f"\n[spoiler=foo_DR][code]{foo_dr[0][1]}[/code][/spoiler]")
+                    if aucdtect and aucdtect[0][1]:
+                        await descfile.write(f"\n[spoiler=auCDtect][code]{aucdtect[0][1]}[/code][/spoiler]\n")
+
+                await descfile.write("\n[/code]\n")
+
+            if album_cover and tracker == "LDU":
+                await descfile.write(f"[url=torrent-cover={album_cover} ][/url]")
+
+            return
+
+    async def ptgen(self, meta: dict, ptgen_site: str = "", ptgen_retry: int = 3) -> str:
+        from src.databases.ptgen import ptdesc
+
+        return await ptdesc(meta, ptgen_site=ptgen_site, ptgen_retry=ptgen_retry)
+
+    async def gazelle_desc(self, meta: dict[str, Any], tracker: str, whitelist: list[str]) -> str:
+        """Generate GAZELLE-style description using template and specific formatting."""
+
+        tmdb_url = f"https://themoviedb.org/{meta['category'].lower()}/{meta['tmdb']}"
+        imdb_url = f"http://imdb.com/title/{meta['imdb']}"
+        tvdb_id = meta.get("tvdb_id")
+        tvdb_url = None
+        if tvdb_id:
+            tvdb_url = f"https://www.thetvdb.com/?tab=series&id={tvdb_id}"
+        mal_id = meta.get("mal_id")
+        mal_url = f"https://myanimelist.net/anime/{mal_id}" if mal_id else None
+
+        tmp_dir = Path(meta["base_dir"]) / "tmp" / meta["uuid"]
+        mediainfo_path = tmp_dir / "MEDIAINFO.txt"
+        with open(mediainfo_path, encoding="utf-8") as f:
+            mediainfo_content = f.read()
+        # Remove the last two lines (empty line and ReportBy line) to fix Gazelle display bug
+        lines = mediainfo_content.splitlines()
+        if len(lines) >= 2:
+            mediainfo_content = "\n".join(lines[:-2])
+
+        template_path = Path(meta["base_dir"]) / "data" / "templates" / "gazelle_desc.txt"
+        with open(template_path, encoding="utf-8") as f:
+            template_content = f.read()
+
+        images = await self._get_valid_images(meta, tracker, whitelist)
+
+        # Adjust image context to strings of newline-separated raw URLs for speed
+        main_images = "\n".join(img["raw_url"] for img in images["main"])
+        episodes = "\n".join(img["raw_url"] for ep_imgs in images["episodes"].values() for img in ep_imgs)
+
+        template = Template(template_content)
+        context = {
+            "tmdb_url": tmdb_url,
+            "imdb_url": imdb_url,
+            "tvdb_url": tvdb_url,
+            "mal_url": mal_url,
+            "overview": meta["overview"],
+            "main_images": main_images,
+            "episodes": episodes,
+            "category": meta["category"],
+            "mediainfo": mediainfo_content,
+            "signature": "[align=right][font=Lucida Sans Unicode][size=0][url=https://codeberg.org/CvT/Uploadrr]Uploadrr v3.0.0[/url][/size][/font][/align]",
+        }
+        desc = template.render(context)
+        return desc
+
+    async def dc_desc(self, meta: dict[str, Any], tracker: str, whitelist: list[str]) -> str:
+        """Generate DC-style description using template and category-specific formatting."""
+        category = meta.get("category", "")
+        is_music = meta.get("is_music", False)
+        is_xxx = meta.get("xxx", False)
+
+        # Build URLs based on category
+        if is_xxx:
+            tpdb = meta.get("tpdb")
+            tmdb_url = f"https://theporndb.net/scenes/{tpdb}" if tpdb else ""
+            imdb_url = ""
+        else:
+            tmdb_url = f"https://themoviedb.org/{category.lower()}/{meta['tmdb']}" if meta.get("tmdb") else ""
+            imdb_url = f"http://imdb.com/title/{meta['imdb']}" if meta.get("imdb") else ""
+
+        tvdb_id = meta.get("tvdb_id")
+        tvdb_url = f"https://www.thetvdb.com/?tab=series&id={tvdb_id}" if tvdb_id else None
+        mal_id = meta.get("mal_id")
+        mal_url = f"https://myanimelist.net/anime/{mal_id}" if mal_id else None
+
+        # Images
+        images = await self._get_valid_images(meta, tracker, whitelist)
+        main_images = "\n".join(img["raw_url"] for img in images["main"])
+        episodes = "\n".join(img["raw_url"] for ep_imgs in images["episodes"].values() for img in ep_imgs)
+
+        # NFO content
+        tmp_dir = Path(meta["base_dir"]) / "tmp" / meta["uuid"]
+        nfo_content = ""
+        if meta.get("bdinfo") is not None:
+            bd_path = tmp_dir / "BD_SUMMARY_00.txt"
+            if bd_path.exists():
+                nfo_content = bd_path.read_text(encoding="utf-8")
+        else:
+            mi_path = tmp_dir / "MEDIAINFO.txt"
+            if mi_path.exists():
+                nfo_content = mi_path.read_text(encoding="utf-8")
+
+        signature = "[c][url=https://codeberg.org/CvT/Uploadrr]Uploadrr v3.0.0[/url][/c]"
+
+        # Music description uses [nfo] for logs/tracklist instead of [code]
+        if is_music:
+            nfo_content = await self._dc_music_nfo(meta)
+
+        # For non-music, render template
+        if not is_music:
+            template_path = Path(meta["base_dir"]) / "data" / "templates" / "dc_desc.txt"
+            with open(template_path, encoding="utf-8") as f:
+                template_content = f.read()
+            template = Template(template_content)
+            context = {
+                "tmdb_url": tmdb_url,
+                "imdb_url": imdb_url,
+                "tvdb_url": tvdb_url,
+                "mal_url": mal_url,
+                "overview": meta.get("overview", ""),
+                "main_images": main_images,
+                "episodes": episodes,
+                "category": category,
+                "nfo": nfo_content,
+                "signature": signature,
+            }
+            return template.render(context)
+
+        # Music: build description with text links (no images), [nfo] for logs/tracklist
+        desc_parts = []
+
+        # URLs as text links
+        urls = []
+        if tmdb_url:
+            urls.append(tmdb_url)
+        if imdb_url:
+            urls.append(imdb_url)
+        if tvdb_url:
+            urls.append(tvdb_url)
+        if mal_url:
+            urls.append(mal_url)
+
+        # Music database links
+        music_urls = {
+            "mbid": meta.get("mbid"),
+            "discogs_id": meta.get("discogs_id"),
+            "discogs_master": meta.get("discogs_master"),
+            "discogs_url": meta.get("discogs_url"),
+            "qobuz_url": meta.get("qobuz_url"),
+            "spotify_url": meta.get("spotify_url"),
+            "tidal_url": meta.get("tidal_url"),
+            "musicbrainz_url": meta.get("musicbrainz_url"),
+            "allmusic": meta.get("allmusic"),
+            "wikidata": meta.get("wikidata"),
+            "genius": meta.get("genius"),
+        }
+        deezer_link = meta.get("deezer_info", {}).get("link")
+        if deezer_link:
+            music_urls["deezer"] = deezer_link
+
+        apple_music = None
+        other_dbs = meta.get("mb_info", {}).get("relations", {}).get("other_databases", [])
+        if other_dbs:
+            if isinstance(other_dbs, list):
+                urls_list = other_dbs
+            else:
+                urls_list = [u.strip() for u in other_dbs.split(",")]
+            apple_music = next((u for u in urls_list if "https://music.apple.com/" in u), None)
+        if apple_music:
+            music_urls["apple_music"] = apple_music
+
+        for _key, val in music_urls.items():
+            if val:
+                urls.append(val)
+
+        if urls:
+            desc_parts.append("\n".join(urls))
+            desc_parts.append("")
+
+        # Overview
+        overview = meta.get("overview", "")
+        if overview:
+            desc_parts.append(overview)
+            desc_parts.append("")
+
+        # NFO (logs + tracklist in [nfo] tags)
+        if nfo_content:
+            desc_parts.append(f"[nfo]{nfo_content}[/nfo]")
+
+        desc_parts.append(signature)
+
+        return "\n\n".join(desc_parts)
+
+    async def _dc_music_nfo(self, meta: dict) -> str:
+        """Build music NFO content with tracklist and logs wrapped in [nfo] instead of [code]."""
+        parts = []
+        tracklist = meta.get("tracklist")
+        if isinstance(tracklist, str) and tracklist.strip():
+            parts.append(tracklist.strip())
+        elif isinstance(tracklist, dict) and tracklist:
+            parts.append(_render_tracklines(tracklist))
+
+        log_files = meta.get("log_files", [])
+        for log_file in log_files:
+            log = await self.read_file(log_file)
+            if log:
+                parts.append(f"LOG:\n{log}")
+
+        for txt_file, content in meta.get("foo_dr", []):
+            if content:
+                parts.append(Path(txt_file).stem.upper() + ":\n" + content)
+
+        for txt_file, content in meta.get("aucdtect", []):
+            if content:
+                parts.append(Path(txt_file).stem.upper() + ":\n" + content)
+
+        return "\n\n".join(parts)
+
+    async def simple_mi_desc(self, mi: list[dict], meta: dict) -> dict[str, Any]:
+        general = next((t for t in mi if t["@type"] == "General"), {})
+        video = next((t for t in mi if t["@type"] == "Video"), {})
+        audio = next((t for t in mi if t["@type"] == "Audio"), {})
+
+        subtitles_list = general.get("Text_Language_List", "N/A")
+        subtitles = ", ".join(sorted(set(subtitles_list.split(" / ")))) if subtitles_list != "N/A" else "N/A"
+
+        resolution = f"{video.get('Width', 'N/A')} x {video.get('Height', 'N/A')}"
+        video_details = [resolution]
+        if video:
+            for key, suffix in [("BitRate_String", ""), ("FrameRate_String", ""), ("Format", "")]:
+                val = video.get(key, "N/A")
+                if val != "N/A":
+                    video_details.append(val if not suffix else val + suffix)
+            video_details.append(meta.get("video_encode", ""))
+
+        audio_details = []
+        audio_desc = meta.get("audio", "N/A")
+        if audio_desc != "N/A":
+            audio_details.append(audio_desc)
+            br = audio.get("BitRate_String", "N/A")
+            if br != "N/A":
+                audio_details.append(br)
+
+        size_bytes = int(general.get("FileSize", 0))
+        if size_bytes < 1024**2:
+            size = f"{size_bytes} Bytes"
+        elif size_bytes < 1024**3:
+            size = f"{size_bytes / 1024**2:.2f} MB"
+        else:
+            size = f"{size_bytes / 1024**3:.2f} GB"
+
+        return {
+            "filename": general.get("FileNameExtension", "N/A"),
+            "duration": general.get("Duration_String3", "N/A"),
+            "video_details_str": " / ".join(video_details),
+            "audio_details_str": " @ ".join(audio_details) if audio_details else "N/A",
+            "subtitles": subtitles,
+            "size": size,
+        }

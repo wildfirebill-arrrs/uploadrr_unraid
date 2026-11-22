@@ -1,0 +1,27 @@
+# COMMON
+__pycache__/
+.DS_Store
+._*
+.cache/
+.python-version
+.vscode/
+.idea/
+.wdm/
+*venv/
+*.egg-info
+
+# Project Specifics
+*.mkv
+old_*
+data/*_index.json
+data/backup/old_config*
+data/cookies/*
+data/config.*
+data/tags.json
+tmp/*
+TEST.py
+*.wip
+bin/
+
+*.md
+!README.md

@@ -1,0 +1,64 @@
+[project]
+name = "uploadrr"
+version = "3.4.2"
+description = "Torrent preparation for Movies, TV, Music + Adult Content. Forked from L4G."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "aiocache>=0.12.3",
+    "aiofiles>=25.1.0",
+    "anitopy>=2.1.1",
+    "bencode-py>=4.0.0",
+    "charset-normalizer>=3.4.0",
+    "deluge-client>=1.10.2",
+    "ffmpeg-python>=0.2.0",
+    "guessit>=3.8.0",
+    "imdbinfo>=0.8.4",
+    "jinja2>=3.1.6",
+    "langcodes[data]>=3.5.1",
+    "language-data>=1.2,<1.4; python_version < '3.10'",
+    "nest-asyncio>=1.6.0",
+    "niquests>=3.18.8",
+    "numpy>=2.0.2",
+    "packaging>=26.2",
+    "pillow>=11.3.0,<12.0; python_version < '3.10'",
+    "pillow>=12.2.0; python_version >= '3.10'",
+    "psutil>=7.2.2",
+    "pymediainfo>=7.0.1",
+    "pyotp>=2.9.0",
+    "pyyaml>=6.0.3",
+    "qbittorrent-api>=2026.5.1",
+    "rich>=14.0.0",
+    "selectolax>=0.4.8",
+    "tinytag>=2.2.1",
+    "torf>=4.3.1",
+    "unidecode>=1.4.0",
+    "urllib3>=2.6.0,<2.7.0; python_version < '3.10'",
+    "urllib3>=2.7.0; python_version >= '3.10'",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.2",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM", "T20", "Q", "RUF"]
+ignore = ["E501", "B008", "SIM102", "SIM115"]
+
+[tool.ruff.lint.per-file-ignores]
+"upload.py" = ["E402"]
+
+[tool.ruff.format]
+skip-magic-trailing-comma = false
+line-ending = "lf"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+indent-style = "space"
+quote-style = "double"

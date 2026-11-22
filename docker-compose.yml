@@ -1,0 +1,30 @@
+services:
+  uploadrr:
+    build: .
+    image: ghcr.io/wildfirebill-unraid/uploadrr:latest
+    container_name: uploadrr
+    restart: unless-stopped
+    # Keep the container alive so you can exec into it for CLI usage.
+    # Override entrypoint/command to run a one-shot upload instead, e.g.:
+    #   docker compose run --rm uploadrr /data/movie.mkv --trackers BLU HDB
+    entrypoint: tail
+    command: -f /dev/null
+    volumes:
+      # Configuration (config.yaml lives here)
+      - /mnt/user/appdata/uploadrr/data:/app/data:rw
+      # Temporary/working files
+      - /mnt/user/appdata/uploadrr/tmp:/app/tmp:rw
+      # Media to upload (map to your download client's container path)
+      - /mnt/user/data/torrents:/data:rw
+      # qBittorrent (or other client) BT_backup for torrent storage reuse
+      - /mnt/user/appdata/qbittorrent/data/BT_backup:/torrent_storage_dir:rw
+    environment:
+      - PUID=99
+      - PGID=100
+      - TZ=America/New_York
+    networks:
+      - bridge
+
+networks:
+  bridge:
+    driver: bridge

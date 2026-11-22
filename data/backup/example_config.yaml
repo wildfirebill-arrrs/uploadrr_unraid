@@ -1,0 +1,505 @@
+version: '3.4.2'
+
+# ------------------------------------------------------------------------------ #
+# FULL CONFIG OPTIONS @ https://codeberg.org/CvT/Uploadrr/wiki/Full-Config-Guide
+# ------------------------------------------------------------------------------ #
+
+DEFAULT:
+  tmdb: TMDB_API_KEY
+  add_trailer: false
+  add_logo: true
+  default_torrent_client: Client1
+  sfx_on_prompt: true
+  always_anon: false
+  torrent_creation: torf # options: mkbrr, mktorren, torf (default)
+
+
+ADULT:
+  API_KEYS:
+    porndb: null
+    ptscreens:  null
+    hamster: null
+    imghost: null
+    catbox: null 
+  always_anon: true # makes all adult uploads anon
+  use_phash: true
+  contact_sheet:
+    pack_max: 6  
+
+SCREENS:  
+  API_KEYS: # pixthost, imgbox , fastpic dont need api keys (catbox says it doent but fails w/o)
+    imgbb: null
+    lensdump: null
+    ptscreens: null
+    onlyimage: null
+    catbox: null
+    passtheimage: null
+    digitalclub: null
+    utp: null
+    hawke: null
+  img_hosts: [ptscreens, onlyimage, hamster, imghost, imgbox, catbox, imgbb, lensdump, pixhost, fastpic, digitalclub, passtheimage, utp, hawke] # order dictates prefrence!
+  screen_count: 6
+  per_episode: 3 # for tv will take x screens for every episode put them in spoiler
+  img_size: 500
+  deinterlace_method: yadif
+  tonemap_hdr: true
+  # Other presets: "hable:desat=0" (color accurate but dark) or "mobius:desat=10" (more pop sometimes) , or try your own!
+  hdr_method: "reinhard:desat=0" 
+  optimize: true       # you can set 0-9 for compression lvl if desired.
+  use_oxipng: false    # slower but smaller PNGs; requires pip install pyoxipng
+  keyframes_only: true # will snap pics on i-frame
+  frame_stats: false     # adds frame stats to image
+
+SIGNATURES:
+  # Use custom per tracker, fallback to global (False, only use tracker sigs if avail / True, only use global, None, no sigs)
+  use_global_sigs: default 
+  # These signatures below are for GLOBAL or used as fallback if using default 
+  # >>> to adjust per tracker, simply add the same keys below tracker of choice
+  # change sigs to "uploadrr" to get simple "Uploadrr {version}" on bottom right
+  signature: "\n[center][url=https://codeberg.org/CvT/Uploadrr][img=400]https://i.ibb.co/2NVWb0c/uploadrr.webp[/img][/url][/center]"
+  anon_signature: "\n[center][url=https://codeberg.org/CvT/Uploadrr][img=40]https://images2.imgbox.com/5f/1a/bGk73WZU_o.png[/img][/url][/center]"
+  pr_signature: "\n[center][size=6][b]Personal Release[/b][/size][/center]\n[center][url=https://codeberg.org/CvT/Uploadrr][img=400]https://i.ibb.co/2NVWb0c/uploadrr.webp[/img][/url][/center]"
+  anon_pr_signature: "\n[center][url=https://codeberg.org/CvT/Uploadrr][img=40]https://images2.imgbox.com/5f/1a/bGk73WZU_o.png[/img][/url][/center]"
+
+AUTO:
+  description_folder: null    # "Path/To/description/folder" see wiki for details
+  delay: 0                    # Seconds to wait between uploads (0 = no delay)
+  size_tolerance: 1           # Max %% file-size difference allowed when matching dupes (1-100)
+  dupe_similarity: 80         # Minimum name similarity %% to flag a torrent as a duplicate (70-100)
+  always_aid: true            # Auto-fetch description even when --auto-desc is not passed
+  hide_queue: false           # Suppress the "Queuing these files" list (override with --hide-queue / -hq)
+  trusted_uploaders: [GME, Roronoa_Zoro, x64] # Add-in trusted uploaders here or change to "USE_ALL" (if everyones trusted, this is for api description snatching)
+
+TRACKERS:
+  default_trackers: "LDU, AITHER, BLU, HHD, LST, PSS, RF, FNP, SP"
+
+  ### NOTE: Any tracker can add any of the following options
+  ###    signature: null
+  ###    anon_signature: null
+  ###    pr_signature: null
+  ###    anon_pr_signature: null
+  ###    qbit_tag: null# <-- for qbit tagging
+  ###    modq: true# !! this can be added, but beware not all trackers support
+  ###    xanon: true# <== if you want anon only for xxx
+  ###    nfo: false# <-- set to false to skip NFO file/description upload on this tracker
+
+  ACM:
+    api_key: null
+    anon: false
+
+  AITHER:
+    api_key: null
+    anon: false
+    modq: false
+    useAPI: false
+
+  ANT:
+    PID: null
+    api_key: null
+    anon: false
+
+  AR:
+    PID: null # {Custom_Announce_URL}/announce
+    username: null
+    password: null
+
+  AZ:
+    PID: null
+    username: null
+    password: null
+    anon: false
+
+  BHD:
+    PID: null
+    api_key: null
+    draft_default: true
+    anon: false
+
+  BHDTV:
+    PID: "https://trackerr.bit-hdtv.com/announce" # {Custom_Announce_URL}
+    api_key: null # found under https://www.bit-hdtv.com/my.php
+    my_announce_url: "https://trackerr.bit-hdtv.com/passkey/announce"
+    anon: false
+
+  BLU:
+    useAPI: false
+    api_key: null
+    anon: false
+    modq: false
+
+  BP:
+    api_key: null
+    anon: false
+
+  BT:
+    username: null
+    password: null
+    PID: null
+
+  CBR:
+    api_key: null
+    anon: false
+    modq: false
+
+  CRT:
+    username: null
+    password: null
+    announce_url: null
+
+  CZ:
+    PID: null
+    username: null
+    password: null
+    anon: false
+
+  DARK:
+    api_key: null
+    anon: false
+
+  DC:
+    username: null
+    password: null
+    passkey: null
+    anon: false
+
+  EMU:
+    api_key: null
+    anon: false
+
+  FL:
+    PID: null
+    username: null
+    password: null
+    uploader_name: null
+    anon: false
+
+  FNP:
+    api_key: null
+    anon: false
+
+  HDB:
+    username: null
+    PASS_KEY: null
+    useAPI: false
+    anon: false
+
+  HDFANS:
+    username: null
+    password: null
+    passkey: null
+    otp_uri: null # "otpauth://totp/..."
+
+  HDT:
+    PID: null # get from https://hdts-announce.ru/announce.php
+    username: null
+    password: null
+    my_announce_url: "https://hdts-announce.ru/announce.php?pid=<PASS_KEY/PID>"
+    anon: false
+
+  HDTIME:
+    username: null
+    password: null
+    passkey: null
+    otp_uri: null # "otpauth://totp/..."
+
+  HHD:
+    api_key: null
+    anon: false
+
+  HP:
+    PID: null
+    api_key: null
+    anon: false
+
+  HUNO:
+    api_key: null
+    anon: false
+
+  IHD:
+    api_key: null
+    anon: false
+
+  ITA:
+    api_key: null
+    anon: false
+
+  LCD:
+    api_key: null
+    anon: false
+
+  LDU:
+    api_key: null
+    anon: false
+
+  LST:
+    api_key: null
+    anon: false
+    modq: false
+
+  LT:
+    api_key: null
+    anon: false
+
+  MANUAL:
+
+  MB:
+    api_key: null
+    anon: false
+
+  MS:
+    api_key: null
+    anon: false
+
+  MTV:
+    PID: null
+    api_key: null # Get_from_security_page
+    username: null
+    password: null
+    anon: false
+
+  NBL:
+    PID: null
+    api_key: null
+    anon: false
+
+  OE:
+    api_key: null
+    anon: false
+
+  OINK:
+    api_key: null
+    anon: false
+
+  OTW:
+    api_key: null
+    anon: false
+    modq: false
+
+  PHD:
+    PID: null
+    username: null
+    password: null
+    anon: false
+
+  PTER:
+    passkey: null
+    img_rehost: false
+    username: null
+    password: null
+    ptgen_api: null
+    anon: false
+
+  PTCAFE:
+    username: null
+    password: null
+    passkey: null
+    otp_uri: null # "otpauth://totp/..."
+
+  PTP:
+    PID: null
+    useAPI: false
+    add_web_source_to_desc: true
+    api_user: null
+    api_key: null
+    username: null
+    password: null
+
+  PTT:
+    api_key: null
+    anon: false
+
+  R4E:
+    PID: null
+    api_key: null
+    anon: false
+
+  RF:
+    api_key: null
+    anon: false
+
+  RGPT: # RailgunPT
+    username: null
+    password: null
+    passkey: null
+    otp_uri: null # "otpauth://totp/..."
+
+  RHD:
+    api_key: null
+    anon: false
+
+  RTF:
+    PID: null # From upload page
+    api_key: null # "get_it_by_running_/api/ _login_command_from_ https://retroflix.club/api/doc"
+    anon: false
+
+  SHRI:
+    api_key: null
+    anon: false
+
+  SN:
+    PID: null #{Custom_Announce_URL}/announce
+    api_key: null
+    anon: false
+
+  SP:
+    api_key: null
+    anon: false
+
+  STC:
+    api_key: null
+    anon: false
+
+  TDC:
+    PID: null
+    api_key: null
+    anon: false
+
+  THR:
+    PID: null # passkey={Custom_Announce_URL}
+    username: null
+    password: null
+    img_api: "get_this_from_the_forum_post"
+    pronfo_api_key: null
+    pronfo_theme: "pronfo theme code"
+    pronfo_rapi_id: "pronfo remote api id"
+    anon: false
+
+  TL:
+    announce_key: null
+
+  TLZ:
+    api_key: null
+    anon: false
+
+  TOCA:
+    api_key: null
+    anon: false
+
+  TMG:
+    PID: null
+    anon: false
+
+  TTG:
+    username: null
+    password: null
+    login_question: null
+    login_answer: null
+    user_id: null
+    annouce_key: null # https://totheglory.im/announce/{announce_key}
+    anon : false
+
+  TTR:
+    api_key: null
+    anon: false
+
+  ULCX:
+    api_key: null
+    anon: false
+    modq: false
+
+  UTP:
+    api_key: null
+    anon: false
+
+  YU:
+    api_key: null
+    anon: false
+
+  ZNTH:
+    api_key: null
+    anon: false
+
+# ============================================================================== #
+# TORRENT CLIENTS
+# ============================================================================== #
+#
+# LOCAL / REMOTE PATH MAPPING
+# ---------------------------
+#
+# Formats:
+#   Single pair (one shared mapping):
+#     local_path: "/mnt/nas/media"         # path as seen on THIS machine
+#     remote_path: "/home/user/media"      # path as seen by the torrent client
+#
+#   Multiple pairs (match by upload location, first match wins):
+#     local_path:
+#       - "/mnt/nas/movies"
+#       - "/mnt/nas/tv"
+#     remote_path:
+#       - "/data/media/movies"
+#       - "/data/media/tv"
+#
+# Examples:
+#   - Windows Docker:    local_path: "C:\\Media"        → remote_path: "/data/media"
+#   - Unraid/Synology:   local_path: "/mnt/user/media"  → remote_path: "/media"
+#   - SSH/NFS mount:     local_path: "/mnt/remote/share" → remote_path: "/home/user/share"
+#   - Unraid + Docker:   local_path: "/mnt/user/media"  → remote_path: "/mnt/user/media"
+#                        (same mount, both sides see identical path — omit if identical)
+#
+# If omitted, defaults to "/LocalPath" → "/RemotePath" (effectively no mapping).
+# Path matching is prefix-based: a file under /mnt/nas/movies/Action.mkv matches
+# local_path "/mnt/nas/movies". Trailing slashes are ignored.
+# ============================================================================== #
+
+TORRENT_CLIENTS:
+  Client1:
+    torrent_client: qbit
+    qbit_url: http://127.0.0.1
+    qbit_port: '8080'
+    qbit_user: qbit_username
+    qbit_pass: qbit_password
+    # local_path: "/Users/you/Downloads"
+    # remote_path: "/data/downloads"
+
+  qbit:
+    torrent_client: qbit
+    enable_search: true
+    qbit_url: http://127.0.0.1
+    qbit_port: '8080'
+    qbit_user: qbit_username
+    qbit_pass: qbit_username
+    torrent_storage_dir: /Users/example/Library/Application Support/qBittorrent/BT_backup
+    content_layout: Original
+    VERIFY_WEBUI_CERTIFICATE: false
+    # Single mapping:
+    # local_path: "/Users/example/Movies"
+    # remote_path: "/data/media"
+    #
+    # Or multiple mappings (first match wins):
+    # local_path:
+    #   - "/Users/example/Movies"
+    #   - "/Users/example/TV"
+    # remote_path:
+    #   - "/data/media/movies"
+    #   - "/data/media/tv"
+
+  rtorrent:
+    torrent_client: rtorrent
+    rtorrent_url: https://user:password@server.host.tld:443/username/rutorrent/plugins/httprpc/action.php
+    # SSH/NFS mounted share example:
+    # local_path: "/mnt/remote/media"
+    # remote_path: "/home/user/media"
+
+  deluge:
+    torrent_client: deluge
+    deluge_url: localhost
+    deluge_port: '8080'
+    deluge_user: deluge_username
+    deluge_pass: deluge_password
+    # local_path: "/home/user/downloads"
+    # remote_path: "/downloads"
+
+  transmission:
+    torrent_client: transmission
+    transmission_url: http://localhost:9091
+    transmission_user: trans_username
+    transmission_pass: trans_password
+    torrent_storage_dir: /.config/transmission-daemon/Torrents/
+    enable_search: true
+    # local_path: "/mnt/remote/torrents"
+    # remote_path: "/var/lib/transmission/downloads"
+
+  watch:
+    torrent_client: watch
+    watch_folder: /Path/To/Watch/Folder
+    # Watch folder only copies the .torrent file — no path mapping needed.
